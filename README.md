@@ -52,6 +52,15 @@
 https://github.com/<你的用户名>/usage-union
 ```
 
+> **github.com 直连超时的网络**（国内常见）：填 codeload 直链，固定版本、可达性好，
+> 发新版本时替换 tag 即可：
+>
+> ```
+> https://codeload.github.com/<你的用户名>/usage-union/zip/refs/tags/v1.6.0
+> ```
+> 原因：引擎安装前要先访问 github.com 主站解析最新 Release（国内直连常超时），
+> 而 codeload.github.com 的 CDN 通常直连可达。
+
 引擎会拉取 `codeload.github.com` 的 zip 包（**优先锚定最新 GitHub Release
 tag**，没有 Release 才用默认分支 HEAD），解压拷贝到
 `~/.kimi-code/plugins/managed/usage-union/`。要求 `kimi.plugin.json` 在仓库

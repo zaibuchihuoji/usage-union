@@ -29,7 +29,7 @@ const SCRIPT_NAME = "usage-union.js";
 const BACKUP_NAME = "index.html.usage-union.bak";
 // 与 plugin/scripts/auto-patch.mjs 的 VERSION 保持一致：注入文件带版本头，
 // 插件 hook 靠它判断新旧，避免工作区安装后被 hook 立刻重写
-const VERSION = "1.6.0";
+const VERSION = "1.7.0";
 
 // ---------------------------------------------------------------------------
 // 参数
@@ -119,10 +119,16 @@ function classify(p) {
 // ---------------------------------------------------------------------------
 // 渲染进程运行时：模板 + 注入配置
 // ---------------------------------------------------------------------------
-function buildRuntimeScript(adapters) {
+function buildRuntimeScript() {
   const template = readFileSync(join(HERE, "scripts", "runtime.js"), "utf8");
-  const config = JSON.stringify({ providers: adapters, version: VERSION, injectedAt: new Date().toISOString() });
-  return `/* usage-union@${VERSION} */\n` + template.replace("/*__USAGE_UNION_CONFIG__*/", config);
+  return `/* usage-union@${VERSION} */\n` + template;
+}
+
+// 供应商清单单独成文件：hook 每次运行都重写（不依赖版本号），渠道增删在下次
+// 会话启动后自动生效
+function writeProviderConfig(dist, adapters) {
+  const config = JSON.stringify({ version: VERSION, providers: adapters });
+  writeFileSync(join(dist, "assets", "usage-union.config.json"), config, "utf8");
 }
 
 // ---------------------------------------------------------------------------
@@ -144,14 +150,16 @@ function install() {
   const backupPath = join(dist, BACKUP_NAME);
   if (!existsSync(backupPath)) copyFileSync(indexPath, backupPath);
 
-  // 写运行时脚本（覆盖旧版本），与前端其它资源同放 assets/
+  // 写运行时脚本 + 供应商配置（与前端其它资源同放 assets/）
   if (!adapters.length) {
-    console.error("✗ config.toml 中没有可识别的 provider（Kimi 托管 / bigmodel.cn / z.ai）。");
+    console.error("✗ config.toml 未配置任何 provider。");
     process.exit(1);
   }
   const assetsDir = join(dist, "assets");
   mkdirSync(assetsDir, { recursive: true });
-  writeFileSync(join(assetsDir, SCRIPT_NAME), buildRuntimeScript(adapters), "utf8");
+  // 供应商清单每次都刷新（不依赖版本号），渠道增删在下次会话启动后自动生效
+  writeProviderConfig(dist, adapters);
+  writeFileSync(join(assetsDir, SCRIPT_NAME), buildRuntimeScript(), "utf8");
 
   // 补丁 index.html（幂等：先移除旧标记行再插入）
   const scriptTag = `    <script src="/assets/${SCRIPT_NAME}"></script>\n`;
@@ -198,6 +206,7 @@ function uninstall() {
   }
   rmSync(join(dist, SCRIPT_NAME), { force: true });
   rmSync(join(dist, "assets", SCRIPT_NAME), { force: true });
+  rmSync(join(dist, "assets", "usage-union.config.json"), { force: true });
   console.log(`✓ 已还原 ${indexPath}`);
 }
 

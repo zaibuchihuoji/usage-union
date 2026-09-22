@@ -19,7 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.6.0";
+const VERSION = "1.7.0";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_NAME = "usage-union.js";
 const BACKUP_NAME = "index.html.usage-union.bak";
@@ -111,11 +111,17 @@ function classify(p) {
   return { id: name, label: name, kind: "generic", apiBase: origin, host, apiKey: fields.api_key ?? "" };
 }
 
-// --- 生成运行时脚本 ----------------------------------------------------------
-function buildRuntimeScript(adapters) {
+// --- 生成运行时脚本 / 供应商配置 --------------------------------------------
+function buildRuntimeScript() {
   const template = readFileSync(join(HERE, "runtime.js"), "utf8");
-  const config = JSON.stringify({ providers: adapters, version: VERSION, injectedAt: new Date().toISOString() });
-  return `/* usage-union@${VERSION} */\n` + template.replace("/*__USAGE_UNION_CONFIG__*/", config);
+  return `/* usage-union@${VERSION} */\n` + template;
+}
+
+// 供应商清单单独成文件：hook 每次运行都重写（不依赖版本号），渠道增删在下次
+// 会话启动后自动生效
+function writeProviderConfig(dist, adapters) {
+  const config = JSON.stringify({ version: VERSION, providers: adapters });
+  writeFileSync(join(dist, "assets", "usage-union.config.json"), config, "utf8");
 }
 
 // --- 补丁 / 还原 --------------------------------------------------------------
@@ -141,6 +147,7 @@ function uninstallDist(dist) {
     writeFileSync(indexPath, html.split("\n").filter((l) => !l.includes(SCRIPT_NAME)).join("\n"), "utf8");
   }
   rmSync(join(dist, "assets", SCRIPT_NAME), { force: true });
+  rmSync(join(dist, "assets", "usage-union.config.json"), { force: true });
   rmSync(join(dist, SCRIPT_NAME), { force: true });
 }
 
@@ -161,7 +168,11 @@ function main() {
 
   const cfgPath = findConfig();
   const adapters = parseProviders(cfgPath).map(classify);
-  if (!adapters.length) { say("usage-union: config.toml 无可识别 provider，跳过"); return; }
+  if (!adapters.length) { say("usage-union: config.toml 未配置任何 provider，跳过"); return; }
+
+  mkdirSync(join(dist, "assets"), { recursive: true });
+  // 供应商清单每次都刷新（不依赖版本号），渠道增删在下次会话启动后自动生效
+  writeProviderConfig(dist, adapters);
 
   const html = readFileSync(indexPath, "utf8");
   const patched = html.includes(SCRIPT_NAME);
@@ -170,8 +181,7 @@ function main() {
 
   if (patched && !stale && !has("--force")) { say(`usage-union: 已是最新 (@${VERSION})`); return; }
 
-  mkdirSync(join(dist, "assets"), { recursive: true });
-  writeFileSync(runtimePath, buildRuntimeScript(adapters), "utf8");
+  writeFileSync(runtimePath, buildRuntimeScript(), "utf8");
   if (!patched || has("--force")) patchHtml(indexPath);
   say(`usage-union: 已注入 @${VERSION} → ${dist}（重启应用生效）`);
   if (has("--status")) {

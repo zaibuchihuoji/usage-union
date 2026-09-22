@@ -6,8 +6,12 @@
  * 功能：
  *  - 跟随应用当前使用的模型（活跃会话 > 最近会话 > 全局默认），徽章显示该
  *    provider 的套餐名与 5小时/每周窗口；同一 provider 内切模型不影响显示
- *  - 每 10s 轮询当前模型；检测到一轮对话结束（busy→空闲）立即刷新额度
+ *  - 每 10 秒检测当前模型 + 每 15 秒重读供应商配置（增删渠道自动跟上）；
+ *    检测到一轮对话结束（busy→空闲）立即刷新额度
  *  - 点击徽章展开所有 provider 的完整明细（含每月窗口、已用/总量、无限制）
+ *
+ * 供应商清单来自 /assets/usage-union.config.json —— 由 hook 每次会话启动时
+ * 从 config.toml 重新生成，注入脚本本身不再包含任何密钥或渠道信息。
  *
  * "无限制"判定（严格）：仅当 provider 查询成功、且响应确认存在活跃套餐
  * （智谱返回 level；Kimi 存在任一用量窗口/月度字段）时，缺失的窗口才显示
@@ -17,12 +21,28 @@
   if (window.__usageUnionInstalled) return;
   window.__usageUnionInstalled = true;
 
-  const CONFIG = /*__USAGE_UNION_CONFIG__*/;
-
+  const CONFIG_URL = "/assets/usage-union.config.json";
   const POLL_MS = 3 * 60 * 1000;        // 额度全量刷新间隔
   const MODEL_POLL_MS = 10 * 1000;      // 当前模型检测间隔
+  const CONFIG_POLL_MS = 15 * 1000;     // 供应商配置重读间隔
   const ATTACH_CHECK_MS = 1500;         // 徽章脱落检查
   const FIRST_FETCH_DELAY = 2000;       // 等宿主 SPA 写入最新 server 地址
+
+  // -------------------------------------------------------------------------
+  // 供应商配置：hook 每次会话启动重写 config.json，这里定期重读
+  // 条目：{ id, label, kind, apiBase, apiKey, host }
+  // -------------------------------------------------------------------------
+  let CONFIG = { providers: [] };
+
+  async function loadConfig() {
+    try {
+      const res = await fetch(`${CONFIG_URL}?t=${Date.now()}`);
+      if (!res.ok) return;
+      const j = await res.json();
+      if (Array.isArray(j?.providers)) CONFIG = j;
+      render();
+    } catch {}
+  }
 
   // -------------------------------------------------------------------------
   // 宿主会话凭据：server 地址 + Bearer token
@@ -45,12 +65,10 @@
   // -------------------------------------------------------------------------
   // 数据源：统一产出 snapshot
   //   { title, plan, planActive,
-  //     five: {pct, resetAt}|null,               // 短窗口（5小时）
-  //     long: {label, pct, resetAt, used, total}|null,  // 长窗口：有周显示周，
-  //                                              // 没周有月显示月（新套餐可能只有月限额）
+  //     five: {pct, resetAt}|null, long: {label, pct, resetAt, used, total}|null,
   //     unlimitedFive, unlimitedLong,
-  //     others: [{label, pct, resetAt, used, total}] }
-  // 窗口组合由套餐类型决定，从 API 实际返回的字段自适应选取，不写死。
+  //     others: [{label, pct, resetAt, used, total}],
+  //     balanceText?, statusText? }
   // -------------------------------------------------------------------------
   function kimiRow(e) {
     return e ? { pct: Math.round((e.usedRatio ?? 0) * 100), resetAt: e.resetAt ?? null } : null;
@@ -132,6 +150,7 @@
   }
 
   async function fetchZhipu(p) {
+    if (!p.apiKey) throw new Error("未配置密钥");
     const res = await fetch(`${p.apiBase}/api/monitor/usage/quota/limit`, {
       headers: { Authorization: p.apiKey, "Content-Type": "application/json" },
     });
@@ -186,7 +205,7 @@
           : l.usage ? Math.round((l.currentValue / l.usage) * 100) : 0,
         used: l.currentValue,
         total: l.usage,
-        resetAt: l.nextResetTime ? new Date(l.nextResetTime).toISOString() : null,
+        resetAt: normalizeEpoch(l.nextResetTime),
       });
     }
     return {
@@ -200,6 +219,7 @@
 
   // 余额型渠道：只查得到余额，没有套餐窗口（DeepSeek / Moonshot 开放平台）
   async function fetchDeepSeek(p) {
+    if (!p.apiKey) throw new Error("未配置密钥");
     const res = await fetch(`${p.apiBase}/user/balance`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
@@ -215,6 +235,7 @@
   }
 
   async function fetchMoonshot(p) {
+    if (!p.apiKey) throw new Error("未配置密钥");
     const res = await fetch(`${p.apiBase}/v1/users/me/balance`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
@@ -229,6 +250,7 @@
   }
 
   async function fetchOpenRouter(p) {
+    if (!p.apiKey) throw new Error("未配置密钥");
     const res = await fetch(`${p.apiBase}/credits`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = (await res.json())?.data ?? {};
@@ -244,6 +266,7 @@
   }
 
   async function fetchSiliconFlow(p) {
+    if (!p.apiKey) throw new Error("未配置密钥");
     const res = await fetch(`${p.apiBase}/v1/user/info`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
@@ -268,7 +291,7 @@
     if (hostPart && !/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|\[::1\]|\[[fF][cCdD]|\[[fF][eE]80)/.test(hostPart)) {
       throw new Error("不安全的连接（http 明文，仅允许内网 IP）");
     }
-    const H = { Authorization: `Bearer ${p.apiKey}` };
+    const H = p.apiKey ? { Authorization: `Bearer ${p.apiKey}` } : {};
     // 无密钥的渠道只做连通性检查
     if (!p.apiKey) {
       try {
@@ -354,7 +377,7 @@
   // （托管 provider 的 id 带 "managed:" 前缀，但模型串用的是短别名）
   // -------------------------------------------------------------------------
   let active = { model: null, providerId: null, unsupported: null, busy: false };
-  let providersMeta = { at: 0, map: new Map(), ids: [] };   // modelId -> providerId；全部渠道 id
+  let providersMeta = { at: 0, map: new Map(), ids: [], baseUrlById: new Map() };   // modelId -> providerId；全部渠道 id
 
   async function loadProvidersMeta() {
     const { origin } = kimiRuntime();
@@ -364,9 +387,12 @@
       if (!res.ok) return;
       const body = await res.json();
       const items = body?.data?.items ?? [];
-      const map = new Map();
-      for (const it of items) for (const m of it.models ?? []) map.set(m, it.id);
-      if (map.size) providersMeta = { at: Date.now(), map, ids: items.map((it) => it.id) };
+      const map = new Map(), baseUrlById = new Map();
+      for (const it of items) {
+        for (const m of it.models ?? []) map.set(m, it.id);
+        baseUrlById.set(it.id, it.base_url ?? "");
+      }
+      if (map.size) providersMeta = { at: Date.now(), map, ids: items.map((it) => it.id), baseUrlById };
     } catch {}
   }
 
@@ -374,12 +400,12 @@
     if (!model) return { providerId: null, knownId: null };
     const knownId = providersMeta.map.get(model) ?? null;
     if (knownId) {
-      const adapter = CONFIG.providers.find((p) => p.id === knownId);
+      const adapter = currentProviders().find((p) => p.id === knownId);
       if (adapter) return { providerId: adapter.id, knownId };
       return { providerId: null, knownId };   // 已知渠道但无额度适配器
     }
     // meta 缺失时的兜底：前缀匹配（兼容 managed: 前缀差异）
-    const hit = CONFIG.providers.find(
+    const hit = currentProviders().find(
       (p) => model.startsWith(p.id + "/") || model.startsWith(p.id.replace(/^managed:/, "") + "/")
     );
     return hit ? { providerId: hit.id, knownId: hit.id } : { providerId: null, knownId: null };
@@ -424,11 +450,9 @@
     if (changed) {
       render();
       // 切到某个 provider 时若其数据是旧的，立即补一次
+      const p = currentProviders().find((x) => x.id === pid);
       const s = pid ? state.get(pid) : null;
-      if (pid && (!s || !s.fetchedAt || Date.now() - s.fetchedAt > POLL_MS)) {
-        const p = CONFIG.providers.find((x) => x.id === pid);
-        if (p) refreshProvider(p);
-      }
+      if (p && (!s || !s.fetchedAt || Date.now() - s.fetchedAt > POLL_MS)) refreshProvider(p);
     } else {
       render();
     }
@@ -437,8 +461,34 @@
   // -------------------------------------------------------------------------
   // 额度状态与轮询
   // -------------------------------------------------------------------------
-  // state: Map<id, {ok, error?, snapshot?, fetchedAt}>
+  // state: Map<id, {ok, error?, snapshot?, fetchedAt, stale?}>
   const state = new Map();
+
+  function currentProviders() {
+    // 以 config.json 为主；服务端有、配置文件还没跟上的渠道（刚添加、hook 未
+    // 跑）按 base_url 合成占位条目，保证增删渠道 10 秒内可见
+    const out = (CONFIG.providers ?? []).map((p) => ({ ...p }));
+    for (const id of providersMeta.ids ?? []) {
+      if (out.some((p) => p.id === id)) continue;
+      const base = providersMeta.baseUrlById?.get(id);
+      let host = "";
+      try { host = new URL(base).host; } catch {}
+      out.push({ id, label: id, kind: classifyHost(host), apiBase: base, apiKey: "", host });
+    }
+    return out;
+  }
+
+  function classifyHost(host) {
+    host = String(host ?? "").toLowerCase();
+    if (/(^|\.)kimi\.com$/.test(host)) return "kimi";
+    if (/(^|\.)moonshot\.(cn|ai)$/.test(host)) return "moonshot";
+    if (/(^|\.)deepseek\.(com|org)$/.test(host)) return "deepseek";
+    if (/(^|\.)bigmodel\.cn$/.test(host)) return "zhipu";
+    if (/(^|\.)z\.ai$/.test(host)) return "zhipu";
+    if (/(^|\.)openrouter\.ai$/.test(host)) return "openrouter";
+    if (/(^|\.)siliconflow\.cn$/.test(host)) return "siliconflow";
+    return "generic";
+  }
 
   function adapterFor(p) {
     if (p.kind === "kimi") return fetchKimi;
@@ -472,7 +522,7 @@
   }
 
   async function refreshAll(staggerMs = 250) {
-    for (const p of CONFIG.providers) {
+    for (const p of currentProviders()) {
       refreshProvider(p); // 并行发起
       await new Promise((r) => setTimeout(r, staggerMs));
     }
@@ -481,17 +531,19 @@
   function schedulePoll() {
     setInterval(() => refreshAll(0), POLL_MS);
     setInterval(() => detectActiveModel(), MODEL_POLL_MS);
+    setInterval(() => loadConfig(), CONFIG_POLL_MS);
     window.addEventListener("focus", () => {
       const stale = [...state.values()].every((s) => !s.fetchedAt || Date.now() - s.fetchedAt > POLL_MS);
       if (stale) refreshAll();
       detectActiveModel();
+      loadConfig();
     });
     // 断网恢复后立即刷新（借鉴 QuotaBar）
     window.addEventListener("online", () => { refreshAll(); detectActiveModel(); });
   }
 
   // -------------------------------------------------------------------------
-  // 徽章内容：当前 provider 的 套餐名 + 5小时/每周 两行
+  // 徽章内容：当前 provider 的 套餐名 + 5小时/长窗口 两行
   // -------------------------------------------------------------------------
   function badgeRows(snapshot) {
     const rows = [];
@@ -507,7 +559,7 @@
   // 检测不可用时的兜底：显示用量最高的 provider
   function fallbackPick() {
     let best = null, bestScore = -1;
-    for (const p of CONFIG.providers) {
+    for (const p of currentProviders()) {
       const s = state.get(p.id);
       const rows = badgeRows(s?.snapshot);
       if (!rows.length) continue;
@@ -611,10 +663,10 @@
 
   function renderBadgeContent(pill) {
     const pid = active.providerId;
-    let p = pid ? CONFIG.providers.find((x) => x.id === pid) : null;
+    let p = pid ? currentProviders().find((x) => x.id === pid) : null;
     let s = p ? state.get(p.id) : null;
 
-    // 当前模型不属于已支持的 provider（自定义渠道等）
+    // 当前模型不属于已配置适配的渠道（自定义渠道等）
     if (!p && active.unsupported) {
       pill.style.display = "";
       pill.textContent = "";
@@ -676,7 +728,7 @@
         line.className = "uu-line";
         const lab = document.createElement("span"); lab.className = "uu-l"; lab.textContent = r.label;
         const val = document.createElement("span"); val.className = `uu-p ${r.unlimited ? "" : pctClass(r.pct)}`;
-        val.textContent = r.unlimited ? "无限制" : `${r.pct}%`;
+        val.textContent = r.unlimited ? "无限制" : Number.isFinite(r.pct) ? `${r.pct}%` : "--";
         line.append(lab, val);
         wrap.appendChild(line);
       }
@@ -695,10 +747,11 @@
         const pctEl = document.createElement("span"); pctEl.className = "uu-pct"; pctEl.textContent = "无限制";
         row.appendChild(pctEl);
       } else {
-        const bar = document.createElement("span"); bar.className = `uu-bar ${pctClass(w.pct ?? 0)}`;
-        const fill = document.createElement("i"); fill.style.width = `${Math.min(100, Math.max(2, w.pct ?? 0))}%`;
+        const pct = Number.isFinite(w.pct) ? w.pct : null;
+        const bar = document.createElement("span"); bar.className = `uu-bar ${pctClass(pct ?? 0)}`;
+        const fill = document.createElement("i"); fill.style.width = `${Math.min(100, Math.max(2, pct ?? 0))}%`;
         bar.appendChild(fill);
-        const pctEl = document.createElement("span"); pctEl.className = "uu-pct"; pctEl.textContent = `${w.pct ?? 0}%`;
+        const pctEl = document.createElement("span"); pctEl.className = "uu-pct"; pctEl.textContent = pct == null ? "--" : `${pct}%`;
         row.append(bar, pctEl);
       }
       pop.appendChild(row);
@@ -727,7 +780,7 @@
 
   function renderPopContent(pop) {
     pop.textContent = "";
-    for (const p of CONFIG.providers) {
+    for (const p of currentProviders()) {
       const s = state.get(p.id);
       const h = document.createElement("h4");
       h.textContent = p.label;
@@ -741,7 +794,7 @@
       if (!s.ok) { const e = document.createElement("div"); e.className = "uu-err"; e.textContent = `查询失败：${s.error ?? ""}`; pop.appendChild(e); continue; }
       if (!s.snapshot.planActive) {
         const e = document.createElement("div"); e.className = "uu-err";
-        e.textContent = s.snapshot.balanceText ?? "无套餐数据";
+        e.textContent = s.snapshot.statusText ?? s.snapshot.balanceText ?? "无套餐数据";
         pop.appendChild(e); continue;
       }
       popWindowRows(pop, s.snapshot);
@@ -752,9 +805,9 @@
         pop.appendChild(e);
       }
     }
-    // 配置了但没有额度接口的渠道，也列出来避免"少了一个 provider"的困惑
+    // 服务端已配置但还没有专属适配器的渠道，也列出来避免"少了一个 provider"的困惑
     for (const id of providersMeta.ids ?? []) {
-      if (CONFIG.providers.some((p) => p.id === id)) continue;
+      if (currentProviders().some((p) => p.id === id)) continue;
       const h = document.createElement("h4");
       h.textContent = id;
       const e = document.createElement("div");
@@ -828,7 +881,7 @@
     ensureBadge();
     setInterval(ensureBadge, ATTACH_CHECK_MS);
     // 延迟首轮拉取：等宿主 SPA 把最新的本地 server 地址写进 sessionStorage（应用重启后端口会变）
-    setTimeout(() => { refreshAll(); detectActiveModel(); }, FIRST_FETCH_DELAY);
+    setTimeout(async () => { await loadConfig(); refreshAll(); detectActiveModel(); }, FIRST_FETCH_DELAY);
     schedulePoll();
   }
 
