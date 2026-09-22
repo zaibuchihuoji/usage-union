@@ -1,0 +1,23 @@
+{
+  "$schema": "https://kimi.com/schemas/kimi.plugin.schema.json",
+  "name": "usage-union",
+  "version": "1.6.0",
+  "description": "在 Kimi Code Desktop 侧边栏左下角聚合显示所有已配置 provider（Kimi 托管 / 智谱 GLM / z.ai）的套餐额度；每次会话启动时自动检查并修复注入（应用更新后自动恢复）。",
+  "keywords": ["usage", "quota", "额度", "套餐", "desktop"],
+  "license": "MIT",
+  "hooks": [
+    {
+      "event": "SessionStart",
+      "matcher": "",
+      "command": "node --input-type=module -e \"const u = await import('node:url'); await import(u.pathToFileURL(process.env.KIMI_PLUGIN_ROOT + '/scripts/auto-patch.mjs').href)\"",
+      "timeout": 15
+    }
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Usage Union（套餐额度徽章）",
+    "shortDescription": "侧边栏左下角显示所有 provider 的套餐额度，点击看 5小时/每周窗口明细",
+    "longDescription": "通过 SessionStart hook 把一段渲染脚本注入 Kimi Code Desktop 的 desktop-dist（app:// 协议从磁盘实时读文件，无需解包 app.asar）。注入的脚本轮询各 provider 额度接口：Kimi 托管走本地 server /api/v1/oauth/usage（复用 SPA 会话凭据），智谱 GLM / z.ai 走 /api/monitor/usage/quota/limit（读取 config.toml 中该 provider 的 api_key）。徽章显示在左下角用户名右侧，点击弹出各窗口明细与重置倒计时。应用自动更新后，下一次会话启动时会自动重新注入。卸载：在对话里让 AI 执行插件 scripts/auto-patch.mjs --uninstall。",
+    "developerName": "usage-union"
+  }
+}
