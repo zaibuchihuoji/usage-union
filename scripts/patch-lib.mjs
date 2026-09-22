@@ -173,6 +173,8 @@ export function writeProviderConfig(dist, adapters, update = null) {
  * 备份语义：备份内容 = 当前 index.html 去掉本插件注入行。每次打补丁都跟随
  * 刷新——应用自动更新覆盖 index.html、或另一插件增删注入后，备份仍是"干净
  * 基线"，卸载时不会恢复出过期页面或指向已删除脚本的 ghost 标签。
+ * script 标签带 ?v=版本号：app:// 协议对同 URL 资源有缓存，换内容不换 URL 会
+ * 读到旧脚本（升级不生效），版本号变化 → URL 变化 → 强制绕过缓存。
  */
 export function patchHtml(indexPath) {
   const html = readFileSync(indexPath, "utf8");
@@ -182,7 +184,7 @@ export function patchHtml(indexPath) {
   let cur = null;
   try { cur = readFileSync(backupPath, "utf8"); } catch {}
   if (cur !== clean) writeAtomic(backupPath, clean);
-  const scriptTag = `    <script src="/assets/${SCRIPT_NAME}"></script>\n`;
+  const scriptTag = `    <script src="/assets/${SCRIPT_NAME}?v=${VERSION}"></script>\n`;
   writeFileSync(indexPath, clean.replace("</body>", `${scriptTag}</body>`), "utf8");
 }
 

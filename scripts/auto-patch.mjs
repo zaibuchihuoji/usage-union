@@ -83,7 +83,8 @@ async function main() {
     if (has("--status")) printProviders(cfgPath, adapters);
   } else {
     writeFileSync(runtimePath, lib.buildRuntimeScript(), "utf8");
-    if (!patched || has("--force")) lib.patchHtml(indexPath);
+    // 升级时也重写标签：?v= 随版本变化，绕过 app:// 的脚本缓存
+    lib.patchHtml(indexPath);
     say(`usage-union: 已注入 @${lib.VERSION} → ${dist}（重启应用生效）`);
     if (has("--status")) printProviders(cfgPath, adapters);
   }
