@@ -1,7 +1,7 @@
 {
   "$schema": "https://kimi.com/schemas/kimi.plugin.schema.json",
   "name": "usage-union",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "在 Kimi Code Desktop 侧边栏左下角聚合显示所有已配置 provider（Kimi 托管 / 智谱 GLM / z.ai）的套餐额度；每次会话启动时自动检查并修复注入（应用更新后自动恢复）。",
   "keywords": ["usage", "quota", "额度", "套餐", "desktop"],
   "license": "MIT",

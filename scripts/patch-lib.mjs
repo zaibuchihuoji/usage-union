@@ -162,10 +162,10 @@ export function buildRuntimeScript() {
 }
 
 // 供应商清单单独成文件：hook 每次运行都重写（不依赖版本号），渠道增删在下次
-// 会话启动后自动生效
-export function writeProviderConfig(dist, adapters) {
+// 会话启动后自动生效。update 为自更新状态（{running, applied}），供徽章弹窗提示
+export function writeProviderConfig(dist, adapters, update = null) {
   writeAtomic(join(dist, "assets", "usage-union.config.json"),
-    JSON.stringify({ version: VERSION, providers: adapters }));
+    JSON.stringify({ version: VERSION, providers: adapters, ...(update ? { update } : {}) }));
 }
 
 // --- 补丁 / 还原 ----------------------------------------------------------------

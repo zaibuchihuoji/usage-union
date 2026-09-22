@@ -841,6 +841,15 @@
       e.textContent = "该渠道暂无额度接口";
       pop.append(h, e);
     }
+    // 自更新提示：hook 已应用新版本、当前窗口还跑着旧脚本时（15s 配置轮询可见）
+    const upd = CONFIG.update;
+    if (upd?.applied && upd.applied !== upd.running) {
+      const note = document.createElement("div");
+      note.className = "uu-err";
+      note.style.color = "var(--uu-ok)";
+      note.textContent = `🆕 已自动更新到 v${upd.applied}，重启应用或刷新视图后生效`;
+      pop.appendChild(note);
+    }
     const foot = document.createElement("div");
     foot.className = "uu-foot";
     const btn = document.createElement("button");
