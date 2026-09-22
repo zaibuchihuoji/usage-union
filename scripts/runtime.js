@@ -28,6 +28,12 @@
   const ATTACH_CHECK_MS = 1500;         // 徽章脱落检查
   const FIRST_FETCH_DELAY = 2000;       // 等宿主 SPA 写入最新 server 地址
 
+  // 带超时的 fetch：本地 server 或外网接口挂起时不让刷新 Promise 悬死
+  // （否则徽章会永远停留在旧数据且无任何"超时"提示）
+  async function fetchT(url, opts = {}, ms = 10000) {
+    return fetch(url, { ...opts, signal: AbortSignal.timeout(ms) });
+  }
+
   // -------------------------------------------------------------------------
   // 供应商配置：hook 每次会话启动重写 config.json，这里定期重读
   // 条目：{ id, label, kind, apiBase, apiKey, host }
@@ -36,7 +42,7 @@
 
   async function loadConfig() {
     try {
-      const res = await fetch(`${CONFIG_URL}?t=${Date.now()}`);
+      const res = await fetchT(`${CONFIG_URL}?t=${Date.now()}`);
       if (!res.ok) return;
       const j = await res.json();
       if (Array.isArray(j?.providers)) CONFIG = j;
@@ -71,14 +77,16 @@
   //     balanceText?, statusText? }
   // -------------------------------------------------------------------------
   function kimiRow(e) {
-    return e ? { pct: Math.round((e.usedRatio ?? 0) * 100), resetAt: e.resetAt ?? null } : null;
+    // usedRatio 缺失时保持 null（UI 显示 "--"），不折叠成 0%
+    if (!e) return null;
+    return { pct: typeof e.usedRatio === "number" ? Math.round(e.usedRatio * 100) : null, resetAt: e.resetAt ?? null };
   }
 
   async function fetchKimi() {
     const { origin } = kimiRuntime();
     if (!origin) throw new Error("server origin 未知");
     const headers = authHeaders();
-    const res = await fetch(`${origin}/api/v1/oauth/usage`, { headers });
+    const res = await fetchT(`${origin}/api/v1/oauth/usage`, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.json();
     const data = body?.data ?? body;
@@ -87,7 +95,7 @@
     // 套餐名：userinfo 的平台等级（Free/Pro…）；无 userinfo 时不猜
     let plan = null;
     try {
-      const r2 = await fetch(`${origin}/api/v1/oauth/userinfo`, { headers });
+      const r2 = await fetchT(`${origin}/api/v1/oauth/userinfo`, { headers });
       if (r2.ok) {
         const b2 = await r2.json();
         const level = (b2?.data?.userInfo ?? b2?.userInfo)?.userLevelName;
@@ -134,7 +142,7 @@
   }
   function creditRow(l) {
     const pct = typeof l.percentage === "number" ? l.percentage
-      : l.usage ? Math.round((l.currentValue / l.usage) * 100) : 0;
+      : l.usage ? Math.round((l.currentValue / l.usage) * 100) : null;
     return {
       pct,
       used: l.currentValue,
@@ -151,7 +159,7 @@
 
   async function fetchZhipu(p) {
     if (!p.apiKey) throw new Error("未配置密钥");
-    const res = await fetch(`${p.apiBase}/api/monitor/usage/quota/limit`, {
+    const res = await fetchT(`${p.apiBase}/api/monitor/usage/quota/limit`, {
       headers: { Authorization: p.apiKey, "Content-Type": "application/json" },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -211,8 +219,10 @@
     return {
       title: p.label, plan: d.level ? `${p.label} ${String(d.level).toUpperCase()}` : null, planActive,
       five, long,
-      unlimitedFive: planActive && !five,
-      unlimitedLong: planActive && !long,
+      // "无限制"要求整层窗口确实缺失：TOKENS_LIMIT 存在时五个/长窗口由回退逻辑
+      // 吃掉，剩一层拿不到数据只能说明"未知"，不能宣称无限制
+      unlimitedFive: planActive && !five && !tokens.length,
+      unlimitedLong: planActive && !long && !tokens.length,
       others,
     };
   }
@@ -220,7 +230,7 @@
   // 余额型渠道：只查得到余额，没有套餐窗口（DeepSeek / Moonshot 开放平台）
   async function fetchDeepSeek(p) {
     if (!p.apiKey) throw new Error("未配置密钥");
-    const res = await fetch(`${p.apiBase}/user/balance`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
+    const res = await fetchT(`${p.apiBase}/user/balance`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
     const info = j?.balance_infos?.[0];
@@ -236,7 +246,7 @@
 
   async function fetchMoonshot(p) {
     if (!p.apiKey) throw new Error("未配置密钥");
-    const res = await fetch(`${p.apiBase}/v1/users/me/balance`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
+    const res = await fetchT(`${p.apiBase}/v1/users/me/balance`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
     const d = j?.data ?? j;
@@ -251,7 +261,7 @@
 
   async function fetchOpenRouter(p) {
     if (!p.apiKey) throw new Error("未配置密钥");
-    const res = await fetch(`${p.apiBase}/credits`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
+    const res = await fetchT(`${p.apiBase}/credits`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const d = (await res.json())?.data ?? {};
     const total = Number(d.total_credits), used = Number(d.total_usage);
@@ -267,7 +277,7 @@
 
   async function fetchSiliconFlow(p) {
     if (!p.apiKey) throw new Error("未配置密钥");
-    const res = await fetch(`${p.apiBase}/v1/user/info`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
+    const res = await fetchT(`${p.apiBase}/v1/user/info`, { headers: { Authorization: `Bearer ${p.apiKey}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
     const bal = j?.data?.balance ?? j?.data?.totalBalance ?? null;
@@ -295,7 +305,7 @@
     // 无密钥的渠道只做连通性检查
     if (!p.apiKey) {
       try {
-        const res = await fetch(`${base}/v1/models`);
+        const res = await fetchT(`${base}/v1/models`);
         if (res.ok) {
           return {
             title: p.label, plan: null, planActive: true,
@@ -304,13 +314,13 @@
           };
         }
       } catch {}
-      throw new Error("未配置密钥");
+      throw new Error("未配置密钥，且连通性检查未通过");
     }
     // MiniMax 存在未文档化的余额端点（社区在用），仅对其域名尝试；失败则继续走
     // 下面的通用探测链
     if (/(^|\.)minimax(i?)\.(com|io|chat)$/.test(p.host ?? "")) {
       try {
-        const j = await (await fetch(`${base}/v1/get_balance`, { headers: H })).json();
+        const j = await (await fetchT(`${base}/v1/get_balance`, { headers: H })).json();
         const raw = j?.balance ?? j?.total_balance ?? j?.data?.balance ?? null;
         if (raw != null && Number.isFinite(Number(raw))) {
           return {
@@ -322,14 +332,14 @@
       } catch {}
     }
     try {
-      const sub = await (await fetch(`${base}/v1/dashboard/billing/subscription`, { headers: H })).json();
+      const sub = await (await fetchT(`${base}/v1/dashboard/billing/subscription`, { headers: H })).json();
       const limit = Number(sub?.hard_limit_usd);
       if (Number.isFinite(limit)) {
         // New API 哨兵值：hard_limit_usd >= 1 亿代表无上限，只显示已用
         const unlimited = limit >= 1e8;
         let used = null;
         try {
-          const u = await (await fetch(`${base}/v1/dashboard/billing/usage`, { headers: H })).json();
+          const u = await (await fetchT(`${base}/v1/dashboard/billing/usage`, { headers: H })).json();
           const cents = Number(u?.total_usage);
           if (Number.isFinite(cents)) used = cents / 100;
         } catch {}
@@ -346,7 +356,7 @@
     // DeepSeek 形状的余额约定（StepFun/Novita 等不少平台兼容同一形状）：
     // GET {base}/user/balance → balance_infos[0].total_balance
     try {
-      const b = await (await fetch(`${base}/user/balance`, { headers: H })).json();
+      const b = await (await fetchT(`${base}/user/balance`, { headers: H })).json();
       const info = b?.balance_infos?.[0];
       const amt = info?.total_balance ?? b?.balance ?? null;
       if (amt != null && Number.isFinite(Number(amt))) {
@@ -359,7 +369,7 @@
       }
     } catch {}
     try {
-      const res = await fetch(`${base}/v1/models`, { headers: H });
+      const res = await fetchT(`${base}/v1/models`, { headers: H });
       if (res.ok) {
         return {
           title: p.label, plan: null, planActive: true,
@@ -383,7 +393,7 @@
     const { origin } = kimiRuntime();
     if (!origin) return;
     try {
-      const res = await fetch(`${origin}/api/v1/providers`, { headers: authHeaders() });
+      const res = await fetchT(`${origin}/api/v1/providers`, { headers: authHeaders() });
       if (!res.ok) return;
       const body = await res.json();
       const items = body?.data?.items ?? [];
@@ -404,10 +414,13 @@
       if (adapter) return { providerId: adapter.id, knownId };
       return { providerId: null, knownId };   // 已知渠道但无额度适配器
     }
-    // meta 缺失时的兜底：前缀匹配（兼容 managed: 前缀差异）
-    const hit = currentProviders().find(
-      (p) => model.startsWith(p.id + "/") || model.startsWith(p.id.replace(/^managed:/, "") + "/")
-    );
+    // meta 缺失时的兜底：前缀匹配（兼容 managed: 前缀差异；托管 Kimi 的模型串
+    // 是 "kimi-code/..." 短别名，与去前缀后的 id "kimi" 不一致，需一并匹配）
+    const hit = currentProviders().find((p) => {
+      const alias = p.id.replace(/^managed:/, "");
+      const aliases = alias === "kimi" ? ["kimi", "kimi-code"] : [alias];
+      return aliases.some((a) => model === a || model.startsWith(a + "/"));
+    });
     return hit ? { providerId: hit.id, knownId: hit.id } : { providerId: null, knownId: null };
   }
 
@@ -418,7 +431,7 @@
     const headers = authHeaders();
     let model = null, busy = false;
     try {
-      const res = await fetch(`${origin}/api/v1/sessions?limit=20`, { headers });
+      const res = await fetchT(`${origin}/api/v1/sessions?limit=20`, { headers });
       if (res.ok) {
         const body = await res.json();
         const items = (body?.data?.items ?? []).filter((s) => !s.archived && s.agent_config?.model);
@@ -432,7 +445,7 @@
     } catch {}
     if (!model) {
       try {
-        const res = await fetch(`${origin}/api/v1/config`, { headers });
+        const res = await fetchT(`${origin}/api/v1/config`, { headers });
         if (res.ok) {
           const body = await res.json();
           model = body?.data?.default_model ?? null;
@@ -463,6 +476,7 @@
   // -------------------------------------------------------------------------
   // state: Map<id, {ok, error?, snapshot?, fetchedAt, stale?}>
   const state = new Map();
+  const inFlight = new Set();   // 正在刷新的 provider id
 
   function currentProviders() {
     // 以 config.json 为主；服务端有、配置文件还没跟上的渠道（刚添加、hook 未
@@ -470,10 +484,13 @@
     const out = (CONFIG.providers ?? []).map((p) => ({ ...p }));
     for (const id of providersMeta.ids ?? []) {
       if (out.some((p) => p.id === id)) continue;
-      const base = providersMeta.baseUrlById?.get(id);
+      const base = providersMeta.baseUrlById?.get(id) ?? "";
       let host = "";
       try { host = new URL(base).host; } catch {}
-      out.push({ id, label: id, kind: classifyHost(host), apiBase: base, apiKey: "", host });
+      // 无 base_url 的内置托管渠道按 id 识别（fetchKimi 走本地 server，不需要 base_url）
+      let kind = classifyHost(host);
+      if (kind === "generic" && !base && /kimi/i.test(id)) kind = "kimi";
+      out.push({ id, label: id, kind, apiBase: base, apiKey: "", host });
     }
     return out;
   }
@@ -504,21 +521,29 @@
   async function refreshProvider(p) {
     const fetcher = adapterFor(p);
     if (!fetcher) return;
+    if (inFlight.has(p.id)) return;   // 同一 provider 去重：全量轮询与 busy 检测并发触发时不重复打接口
+    inFlight.add(p.id);
     try {
       const snapshot = await fetcher();
       state.set(p.id, { ok: true, snapshot, fetchedAt: Date.now(), stale: false });
     } catch (err) {
+      const raw = String(err?.message ?? err);
+      // 浏览器直连被 CORS/网络挡下时，"Failed to fetch" 对用户毫无信息量
+      const error = /failed to fetch|networkerror|load failed/i.test(raw)
+        ? "网络失败或该接口不允许浏览器直连（CORS）" : raw;
       const prev = state.get(p.id);
       // 刷新失败但有过有效读数：保留旧数据（标记 stale），绝不空白也不归零
       state.set(p.id, {
         ok: false,
-        error: String(err?.message ?? err),
+        error,
         snapshot: prev?.snapshot ?? null,
         fetchedAt: prev?.fetchedAt ?? 0,
         stale: !!prev?.snapshot,
       });
+    } finally {
+      inFlight.delete(p.id);
+      render();
     }
-    render();
   }
 
   async function refreshAll(staggerMs = 250) {
@@ -588,7 +613,8 @@
 .uu-plan .uu-sub{font-weight:400;opacity:.6}
 .uu-p{font-weight:600;font-variant-numeric:tabular-nums}
 .uu-p.warn{color:var(--uu-warn)} .uu-p.bad{color:var(--uu-bad)}
-.uu-pop{position:fixed;z-index:2147483000;min-width:250px;max-width:340px;padding:10px 12px;border-radius:10px;
+.uu-pop{position:fixed;z-index:2147483000;min-width:250px;max-width:340px;max-height:calc(100vh - 16px);overflow-y:auto;
+  padding:10px 12px;border-radius:10px;
   font-size:12px;line-height:1.5;color:var(--uu-fg);background:var(--uu-pop-bg);border:1px solid var(--uu-border);
   box-shadow:0 8px 28px rgba(0,0,0,.35);backdrop-filter:blur(14px);}
 .uu-pop h4{margin:0 0 2px;font-size:12px;font-weight:600;display:flex;justify-content:space-between;gap:12px;align-items:baseline}
@@ -672,7 +698,7 @@
       pill.textContent = "";
       const dot = document.createElement("span"); dot.className = "uu-dot idle";
       const wrap = document.createElement("span"); wrap.className = "uu-rows";
-      const l1 = document.createElement("span"); l1.className = "uu-plan"; l1.textContent = active.unsupported.split("/")[0] || active.unsupported;
+      const l1 = document.createElement("span"); l1.className = "uu-plan"; l1.textContent = active.unsupported.replace(/^managed:/, "").split("/")[0] || active.unsupported;
       const l2 = document.createElement("span"); l2.className = "uu-line"; l2.textContent = "该渠道暂无额度接口";
       wrap.append(l1, l2);
       pill.append(dot, wrap);
@@ -877,6 +903,19 @@
       const style = document.createElement("style");
       style.textContent = CSS;
       document.head.appendChild(style);
+    } catch {}
+    // 主题切换跟随：应用内切明暗主题（改根元素 class/data-color-scheme）或
+    // 系统主题变化时，已挂载的徽章/弹窗同步换肤，而不是等重建
+    const applyTheme = () => {
+      const cls = themeClass();
+      if (UI.badge) UI.badge.className = cls;
+      if (UI.pop) UI.pop.className = `uu-pop ${cls}`;
+    };
+    try {
+      new MutationObserver(applyTheme).observe(document.documentElement, {
+        attributes: true, attributeFilter: ["class", "data-color-scheme"],
+      });
+      matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
     } catch {}
     ensureBadge();
     setInterval(ensureBadge, ATTACH_CHECK_MS);

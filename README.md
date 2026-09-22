@@ -56,7 +56,7 @@ https://github.com/<你的用户名>/usage-union
 > 发新版本时替换 tag 即可：
 >
 > ```
-> https://codeload.github.com/<你的用户名>/usage-union/zip/refs/tags/v1.6.0
+> https://codeload.github.com/<你的用户名>/usage-union/zip/refs/tags/v1.8.0
 > ```
 > 原因：引擎安装前要先访问 github.com 主站解析最新 Release（国内直连常超时），
 > 而 codeload.github.com 的 CDN 通常直连可达。
@@ -181,11 +181,12 @@ hooks / 斜杠命令（`pluginCommand`），**没有任何渲染层 UI 扩展点
 
 ```
 usage-union.mjs              工作区构建器/CLI（install | uninstall | status）
-plugin/
-├── kimi.plugin.json         官方插件清单（SessionStart hook 自动注入）
-├── scripts/auto-patch.mjs   自包含安装器（hook 静默模式 + --status/--force/--uninstall）
-├── scripts/runtime.js       注入运行时模板（唯一来源，构建器也读它）
-└── skills/usage-union-manager/SKILL.md   诊断/修复/卸载技能
+kimi.plugin.json             官方插件清单（SessionStart hook 自动注入；版本号单一来源）
+scripts/patch-lib.mjs        共享库：定位/TOML 解析/provider 分类/补丁与还原
+                             （CLI 与 hook 唯一实现来源，防止行为漂移）
+scripts/auto-patch.mjs       hook 入口（静默模式 + --status/--force/--uninstall）
+scripts/runtime.js           注入运行时模板（唯一来源，构建器也读它）
+skills/usage-union-manager/SKILL.md     诊断/修复/卸载技能
 ```
 
 ## 已知限制
