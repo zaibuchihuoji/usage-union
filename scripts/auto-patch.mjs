@@ -66,11 +66,12 @@ async function main() {
   if (!adapters.length) { say("usage-union: config.toml 未配置任何 provider，跳过"); return; }
 
   mkdirSync(join(dist, "assets"), { recursive: true });
-  // 供应商清单每次都刷新（不依赖版本号），渠道增删在下次会话启动后自动生效；
-  // 同时带上自更新状态，徽章弹窗可提示"已更新待生效"
-  const st = su.updateState(PLUGIN_ROOT);
-  const update = st?.version ? { running: lib.VERSION, applied: st.version } : null;
-  lib.writeProviderConfig(dist, adapters, update);
+  // 供应商清单每次都刷新（不依赖版本号），渠道增删在下次会话启动后自动生效。
+  // 不再写 update 字段：v1.9.3 曾用 .update-state.json 的版本记录构造
+  // "已更新待生效"提示，但该字段语义是"上次检查时的版本记录"而非"已应用
+  // 版本"，错位数据会让提示横幅刷新页面也消不掉。新版待生效提示由渲染端
+  // 本地比对（注入标签 ?v= vs config.version），见 runtime.js
+  lib.writeProviderConfig(dist, adapters);
 
   const html = readFileSync(indexPath, "utf8");
   const patched = html.includes(lib.SCRIPT_NAME);
@@ -100,11 +101,8 @@ async function main() {
       });
       if (r?.applied) {
         say(`usage-union: 已自动更新到 v${r.version}，下次会话生效`);
-        // 立即回写供应商配置：正开着的窗口（旧脚本 + 15s 配置轮询）能马上
-        // 在徽章弹窗里看到"已更新待生效"
-        try {
-          lib.writeProviderConfig(dist, adapters, { running: lib.VERSION, applied: r.version });
-        } catch {}
+        // 渲染端（旧脚本 + 15s 配置轮询）会从 config.version 感知到新版磁盘版本，
+        // 弹窗里提示待生效；无需在这里额外回写
       } else if (r?.reason && (has("--check-update") || has("--status"))) say(`usage-union: 更新检查：${r.latest ?? r.reason}`);
     } catch {}
   }

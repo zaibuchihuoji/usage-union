@@ -27,6 +27,14 @@
   const CONFIG_POLL_MS = 15 * 1000;     // 供应商配置重读间隔
   const ATTACH_CHECK_MS = 1500;         // 徽章脱落检查
   const FIRST_FETCH_DELAY = 2000;       // 等宿主 SPA 写入最新 server 地址
+  // 页面正在运行的脚本版本（注入标签 ?v=）：与 config.json 的 version（hook
+  // 每次重写 = 磁盘上的最新版本）不一致 = 新版已注入而页面未重载 → 挂"待生效"
+  // 提示。本地比对，不依赖任何服务端状态文件（v1.9.3 曾用 .update-state.json
+  // 的版本记录构造该提示，语义错位导致刷新页面后横幅也消不掉）
+  const RUNNING_VERSION = (() => {
+    try { return /v=([^&"]+)/.exec(document.currentScript?.src ?? "")?.[1] ?? ""; }
+    catch { return ""; }
+  })();
 
   // 带超时的 fetch：本地 server 或外网接口挂起时不让刷新 Promise 悬死
   // （否则徽章会永远停留在旧数据且无任何"超时"提示）
@@ -855,14 +863,16 @@
         pop.appendChild(e);
       }
     }
-    // 自更新提示：hook 已应用新版本、当前窗口还跑着旧脚本时（15s 配置轮询可见）
-    const upd = CONFIG.update;
-    if (upd?.applied && upd.applied !== upd.running) {
+    // 新版待生效：磁盘注入版本（config.version，hook 每次会话重写）领先于本页
+    // 正在运行的版本（注入标签 ?v=）→ 点击重载页面立即切换。版本一致的瞬间
+    // 横幅自动消失（15s 配置轮询），不会出现"刷新后横幅还在"的情况
+    const diskV = CONFIG.version ?? CONFIG.update?.running;
+    if (RUNNING_VERSION && diskV && diskV !== RUNNING_VERSION) {
       const note = document.createElement("button");
       note.className = "uu-err";
       note.style.cssText = "display:block;width:100%;text-align:left;color:var(--uu-ok);cursor:pointer;padding:0";
       note.title = "点击刷新页面，立即切换到新版本";
-      note.textContent = `🆕 已自动更新到 v${upd.applied} · 点击刷新页面立即生效`;
+      note.textContent = `🆕 新版 v${diskV} 待生效（本页还在跑 v${RUNNING_VERSION}）· 点击立即刷新`;
       note.addEventListener("click", () => location.reload());
       pop.appendChild(note);
     }
