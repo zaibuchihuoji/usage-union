@@ -565,6 +565,21 @@
     });
     // 断网恢复后立即刷新（借鉴 QuotaBar）
     window.addEventListener("online", () => { refreshAll(); detectActiveModel(); });
+    // 窗口被遮挡时 Chromium 把定时器节流到 ~1 次/分钟：用户"看回来"的时机
+    // 立即补检测/刷新，切回应用马上跟上，而不是等下一轮
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      detectActiveModel();
+      loadConfig();
+      const stale = [...state.values()].every((s) => !s.fetchedAt || Date.now() - s.fetchedAt > POLL_MS);
+      if (stale) refreshAll();
+    });
+    let lastWake = 0;
+    document.addEventListener("mousemove", () => {
+      if (Date.now() - lastWake < 10_000) return;
+      lastWake = Date.now();
+      detectActiveModel();
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -844,10 +859,12 @@
     // 自更新提示：hook 已应用新版本、当前窗口还跑着旧脚本时（15s 配置轮询可见）
     const upd = CONFIG.update;
     if (upd?.applied && upd.applied !== upd.running) {
-      const note = document.createElement("div");
+      const note = document.createElement("button");
       note.className = "uu-err";
-      note.style.color = "var(--uu-ok)";
-      note.textContent = `🆕 已自动更新到 v${upd.applied}，重启应用或刷新视图后生效`;
+      note.style.cssText = "display:block;width:100%;text-align:left;color:var(--uu-ok);cursor:pointer;padding:0";
+      note.title = "点击刷新页面，立即切换到新版本";
+      note.textContent = `🆕 已自动更新到 v${upd.applied} · 点击刷新页面立即生效`;
+      note.addEventListener("click", () => location.reload());
       pop.appendChild(note);
     }
     const foot = document.createElement("div");

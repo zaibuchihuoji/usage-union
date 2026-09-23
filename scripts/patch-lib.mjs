@@ -8,7 +8,7 @@
  * 判定会失效。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, copyFileSync, renameSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, copyFileSync, renameSync, unlinkSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -169,34 +169,51 @@ export function writeProviderConfig(dist, adapters, update = null) {
 }
 
 // --- 补丁 / 还原 ----------------------------------------------------------------
+function statOf(fp) {
+  try { const s = statSync(fp); return `${s.size}:${s.mtimeMs}`; } catch { return "missing"; }
+}
+
 /**
  * 备份语义：备份内容 = 当前 index.html 去掉本插件注入行。每次打补丁都跟随
  * 刷新——应用自动更新覆盖 index.html、或另一插件增删注入后，备份仍是"干净
  * 基线"，卸载时不会恢复出过期页面或指向已删除脚本的 ghost 标签。
  * script 标签带 ?v=版本号：app:// 协议对同 URL 资源有缓存，换内容不换 URL 会
  * 读到旧脚本（升级不生效），版本号变化 → URL 变化 → 强制绕过缓存。
+ *
+ * index.html 是多个插件（usage-union / auto-memory / turn-stats 等）的公共
+ * 注入点，且 app:// 协议对每个请求实时读盘。这里用「读前后 stat 校验 +
+ * 原子写 + 写后复验 + 有限重试」的乐观并发：撞上其他插件/应用自身的并发写时
+ * 重读重算，收敛于包含所有人标签的最新内容；原子写保证渲染进程永远读不到
+ * 半截文件。
  */
 export function patchHtml(indexPath) {
-  const html = readFileSync(indexPath, "utf8");
   const backupPath = join(dirname(indexPath), BACKUP_NAME);
-  const clean = html.split("\n").filter((l) => !l.includes(SCRIPT_NAME)).join("\n");
-  if (!clean.includes("</body>")) throw new Error("index.html 结构异常（没有 </body>）");
-  let cur = null;
-  try { cur = readFileSync(backupPath, "utf8"); } catch {}
-  if (cur !== clean) writeAtomic(backupPath, clean);
-  const scriptTag = `    <script src="/assets/${SCRIPT_NAME}?v=${VERSION}"></script>\n`;
-  writeFileSync(indexPath, clean.replace("</body>", `${scriptTag}</body>`), "utf8");
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const s1 = statOf(indexPath);
+    const html = readFileSync(indexPath, "utf8");
+    if (statOf(indexPath) !== s1) continue;   // 读期间文件在变，重读
+    const clean = html.split("\n").filter((l) => !l.includes(SCRIPT_NAME)).join("\n");
+    if (!clean.includes("</body>")) throw new Error("index.html 结构异常（没有 </body>）");
+    let cur = null;
+    try { cur = readFileSync(backupPath, "utf8"); } catch {}
+    if (cur !== clean) writeAtomic(backupPath, clean);
+    const scriptTag = `    <script src="/assets/${SCRIPT_NAME}?v=${VERSION}"></script>\n`;
+    writeAtomic(indexPath, clean.replace("</body>", `${scriptTag}</body>`));
+    // 写后复验：若被并发写覆盖丢了我们的标签，下一轮重试会基于最新内容补回
+    if (readFileSync(indexPath, "utf8").includes(SCRIPT_NAME)) return;
+  }
+  throw new Error("index.html 并发写入冲突，重试耗尽（下次会话自动重试）");
 }
 
 export function uninstallDist(dist) {
   const indexPath = join(dist, "index.html");
   const backupPath = join(dist, BACKUP_NAME);
   if (existsSync(backupPath)) {
-    copyFileSync(backupPath, indexPath);
+    writeAtomic(indexPath, readFileSync(backupPath, "utf8"));
     rmSync(backupPath, { force: true });
   } else if (existsSync(indexPath)) {
     const html = readFileSync(indexPath, "utf8");
-    writeFileSync(indexPath, html.split("\n").filter((l) => !l.includes(SCRIPT_NAME)).join("\n"), "utf8");
+    writeAtomic(indexPath, html.split("\n").filter((l) => !l.includes(SCRIPT_NAME)).join("\n"));
   }
   rmSync(join(dist, "assets", SCRIPT_NAME), { force: true });
   rmSync(join(dist, "assets", "usage-union.config.json"), { force: true });

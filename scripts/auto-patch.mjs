@@ -82,7 +82,7 @@ async function main() {
     // --status 的核心诉求之一就是看 provider 识别结果，"已是最新"时也要打印
     if (has("--status")) printProviders(cfgPath, adapters);
   } else {
-    writeFileSync(runtimePath, lib.buildRuntimeScript(), "utf8");
+    lib.writeAtomic(runtimePath, lib.buildRuntimeScript());
     // 升级时也重写标签：?v= 随版本变化，绕过 app:// 的脚本缓存
     lib.patchHtml(indexPath);
     say(`usage-union: 已注入 @${lib.VERSION} → ${dist}（重启应用生效）`);
@@ -95,6 +95,8 @@ async function main() {
       const r = await su.selfUpdate({
         repo: REPO, pluginRoot: PLUGIN_ROOT, currentVersion: lib.VERSION,
         log: say, force: has("--check-update"),
+        // hook 总时长 15s：留 3s 余量，预算耗尽时放弃交换绝不被杀在中间态
+        deadline: quiet ? startedAt + 12_000 : undefined,
       });
       if (r?.applied) {
         say(`usage-union: 已自动更新到 v${r.version}，下次会话生效`);
