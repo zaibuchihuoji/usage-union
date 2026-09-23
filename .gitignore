@@ -1,7 +1,6 @@
 # 本地研究/临时文件
 .mimosa/
 .research/
-test/
 *.log
 
 # 系统文件

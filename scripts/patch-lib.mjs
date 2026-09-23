@@ -109,27 +109,30 @@ export function parseProviders(cfgPath) {
   return providers;
 }
 
-// --- provider 分类（与 runtime.js 的适配器一一对应） ------------------------------
+// --- provider 分类（与 runtime.js 的 classifyHost 同一套边界安全正则） -----------------
+// host 匹配必须带 dot 边界（(^|.)x.y$）：endsWith("kimi.com") 会把 fakekimi.com
+// 这类后缀重叠域误判进官方渠道（误判后 key 只会发往硬编码官方 apiBase，无实害，
+// 但分类失真且与渲染层判定不一致）
 export function classify(p) {
   const { name, fields } = p;
   const baseUrl = fields.base_url ?? "";
   let host = "", origin = baseUrl;
   try { const u = new URL(baseUrl); host = u.host; origin = `${u.protocol}//${u.host}`; } catch {}
-  if (fields.type === "kimi" || host.endsWith("kimi.com")) {
+  if (fields.type === "kimi" || /(^|\.)kimi\.com$/.test(host)) {
     return { id: name, label: "Kimi", kind: "kimi" };
   }
-  if (host.endsWith("moonshot.cn") || host.endsWith("moonshot.ai")) {
+  if (/(^|\.)moonshot\.(cn|ai)$/.test(host)) {
     // Moonshot 开放平台（api.moonshot.cn / api.moonshot.ai，type 通常为 openai）只有按量余额接口
-    const apiBase = host.endsWith("moonshot.ai") ? "https://api.moonshot.ai" : "https://api.moonshot.cn";
+    const apiBase = /(^|\.)moonshot\.ai$/.test(host) ? "https://api.moonshot.ai" : "https://api.moonshot.cn";
     return { id: name, label: "Moonshot", kind: "moonshot", apiBase, apiKey: fields.api_key ?? "" };
   }
-  if (host.endsWith("deepseek.com") || host.endsWith("deepseek.org")) {
+  if (/(^|\.)deepseek\.(com|org)$/.test(host)) {
     return { id: name, label: "DeepSeek", kind: "deepseek", apiBase: "https://api.deepseek.com", apiKey: fields.api_key ?? "" };
   }
-  if (host === "open.bigmodel.cn" || host.endsWith("bigmodel.cn")) {
+  if (/(^|\.)bigmodel\.cn$/.test(host)) {
     return { id: name, label: "GLM智谱", kind: "zhipu", apiBase: "https://open.bigmodel.cn", apiKey: fields.api_key ?? "" };
   }
-  if (host === "api.z.ai" || host.endsWith("z.ai")) {
+  if (/(^|\.)z\.ai$/.test(host)) {
     return { id: name, label: "GLM国际", kind: "zhipu", apiBase: "https://api.z.ai", apiKey: fields.api_key ?? "" };
   }
   if (/(^|\.)openrouter\.ai$/.test(host)) {

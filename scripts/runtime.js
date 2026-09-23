@@ -424,50 +424,59 @@
     return hit ? { providerId: hit.id, knownId: hit.id } : { providerId: null, knownId: null };
   }
 
+  let detecting = false;
   async function detectActiveModel() {
-    const { origin } = kimiRuntime();
-    if (!origin) return;
-    if (Date.now() - providersMeta.at > 60 * 1000) await loadProvidersMeta();
-    const headers = authHeaders();
-    let model = null, busy = false;
+    // 并发守卫：检测链最多三个串行 fetch（最坏 30s），而定时器 10s 一发，
+    // 本地 server 卡顿时会并发叠起多份检测/触发多次 refreshAll
+    if (detecting) return;
+    detecting = true;
     try {
-      const res = await fetchT(`${origin}/api/v1/sessions?limit=20`, { headers });
-      if (res.ok) {
-        const body = await res.json();
-        const items = (body?.data?.items ?? []).filter((s) => !s.archived && s.agent_config?.model);
-        const running = items.find((s) => s.busy || s.main_turn_active);
-        if (running) { model = running.agent_config.model; busy = true; }
-        else {
-          const latest = items.slice().sort((a, b) => Date.parse(b.updated_at ?? 0) - Date.parse(a.updated_at ?? 0))[0];
-          if (latest) model = latest.agent_config.model;
-        }
-      }
-    } catch {}
-    if (!model) {
+      const { origin } = kimiRuntime();
+      if (!origin) return;
+      if (Date.now() - providersMeta.at > 60 * 1000) await loadProvidersMeta();
+      const headers = authHeaders();
+      let model = null, busy = false;
       try {
-        const res = await fetchT(`${origin}/api/v1/config`, { headers });
+        const res = await fetchT(`${origin}/api/v1/sessions?limit=20`, { headers });
         if (res.ok) {
           const body = await res.json();
-          model = body?.data?.default_model ?? null;
+          const items = (body?.data?.items ?? []).filter((s) => !s.archived && s.agent_config?.model);
+          const running = items.find((s) => s.busy || s.main_turn_active);
+          if (running) { model = running.agent_config.model; busy = true; }
+          else {
+            const latest = items.slice().sort((a, b) => Date.parse(b.updated_at ?? 0) - Date.parse(a.updated_at ?? 0))[0];
+            if (latest) model = latest.agent_config.model;
+          }
         }
       } catch {}
-    }
-    // 一轮对话结束 → 立刻刷新额度
-    const wasBusy = active.busy;
-    if (wasBusy && !busy) refreshAll();
-    active.busy = busy;
+      if (!model) {
+        try {
+          const res = await fetchT(`${origin}/api/v1/config`, { headers });
+          if (res.ok) {
+            const body = await res.json();
+            model = body?.data?.default_model ?? null;
+          }
+        } catch {}
+      }
+      // 一轮对话结束 → 立刻刷新额度
+      const wasBusy = active.busy;
+      if (wasBusy && !busy) refreshAll();
+      active.busy = busy;
 
-    const { providerId: pid, knownId } = resolveModelProvider(model);
-    const changed = pid !== active.providerId;
-    active = { model, providerId: pid, unsupported: model && !pid ? (knownId ?? model) : null, busy };
-    if (changed) {
-      render();
-      // 切到某个 provider 时若其数据是旧的，立即补一次
-      const p = currentProviders().find((x) => x.id === pid);
-      const s = pid ? state.get(pid) : null;
-      if (p && (!s || !s.fetchedAt || Date.now() - s.fetchedAt > POLL_MS)) refreshProvider(p);
-    } else {
-      render();
+      const { providerId: pid, knownId } = resolveModelProvider(model);
+      const changed = pid !== active.providerId;
+      active = { model, providerId: pid, unsupported: model && !pid ? (knownId ?? model) : null, busy };
+      if (changed) {
+        render();
+        // 切到某个 provider 时若其数据是旧的，立即补一次
+        const p = currentProviders().find((x) => x.id === pid);
+        const s = pid ? state.get(pid) : null;
+        if (p && (!s || !s.fetchedAt || Date.now() - s.fetchedAt > POLL_MS)) refreshProvider(p);
+      } else {
+        render();
+      }
+    } finally {
+      detecting = false;
     }
   }
 
@@ -845,16 +854,6 @@
         e.textContent = s.snapshot.statusText ?? s.snapshot.balanceText ?? "无窗口数据";
         pop.appendChild(e);
       }
-    }
-    // 服务端已配置但还没有专属适配器的渠道，也列出来避免"少了一个 provider"的困惑
-    for (const id of providersMeta.ids ?? []) {
-      if (currentProviders().some((p) => p.id === id)) continue;
-      const h = document.createElement("h4");
-      h.textContent = id;
-      const e = document.createElement("div");
-      e.className = "uu-err";
-      e.textContent = "该渠道暂无额度接口";
-      pop.append(h, e);
     }
     // 自更新提示：hook 已应用新版本、当前窗口还跑着旧脚本时（15s 配置轮询可见）
     const upd = CONFIG.update;
